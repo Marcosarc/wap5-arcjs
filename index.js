@@ -10,7 +10,7 @@ const PQueue = require('p-queue');
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
-const port = 3000;
+const port = process.env.PORT || 3000;
 
 let client;
 let qrCodeData = null;
@@ -19,10 +19,68 @@ let isInitializing = false;
 
 const queue = new PQueue.default({ concurrency: 3 });
 
-app.use(express.static('public'));
-
 app.get('/', (_, res) => {
-    res.sendFile(__dirname + '/public/index.html');
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>WhatsApp Web Authentication</title>
+            <script src="/socket.io/socket.io.js"></script>
+            <style>
+                body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+                #qr-container { margin: 20px 0; }
+                button { padding: 10px 20px; margin: 5px; }
+            </style>
+        </head>
+        <body>
+            <h1>WhatsApp Web Authentication</h1>
+            <div id="status"></div>
+            <div id="qr-container"></div>
+            <button id="init-button" onclick="initializeWhatsApp()">Iniciar WhatsApp</button>
+            <button id="close-button" onclick="closeWhatsApp()" style="display:none;">Cerrar WhatsApp</button>
+            <script>
+                const socket = io();
+                const status = document.getElementById('status');
+                const qrContainer = document.getElementById('qr-container');
+                const initButton = document.getElementById('init-button');
+                const closeButton = document.getElementById('close-button');
+
+                socket.on('whatsapp_ready', () => {
+                    status.innerHTML = '<h2>Cliente de WhatsApp está listo!</h2>';
+                    qrContainer.innerHTML = '';
+                    initButton.style.display = 'none';
+                    closeButton.style.display = 'inline';
+                });
+
+                socket.on('qr', (qrCode) => {
+                    status.innerHTML = '<h2>Escanea el código QR con tu WhatsApp para iniciar sesión</h2>';
+                    qrContainer.innerHTML = '<img src="' + qrCode + '" alt="QR Code" />';
+                });
+
+                function initializeWhatsApp() {
+                    fetch('/initialize')
+                        .then(response => response.json())
+                        .then(data => {
+                            status.innerHTML = data.message;
+                        });
+                }
+
+                function closeWhatsApp() {
+                    fetch('/close')
+                        .then(response => response.json())
+                        .then(data => {
+                            status.innerHTML = data.message;
+                            qrContainer.innerHTML = '';
+                            initButton.style.display = 'inline';
+                            closeButton.style.display = 'none';
+                        });
+                }
+            </script>
+        </body>
+        </html>
+    `);
 });
 
 app.get('/initialize', async (req, res) => {
