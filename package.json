@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "preinstall": "npx npm-force-resolutions",
-    "start": "node index.js" 
+    "start": "node index.js"
   },
   "dependencies": {
     "axios": "^1.7.7",
@@ -19,9 +19,6 @@
     "whatsapp-web.js": "^1.26.0",
     "ws": "^8.18.0",
     "socket.io": "^4.7.4"
-  },
-  "resolutions": {
-    "ws": "8.17.x"
   },
   "devDependencies": {
     "npm-force-resolutions": "^0.0.10"
