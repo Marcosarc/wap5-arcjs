@@ -23,7 +23,7 @@
     "pm2": "^5.3.0" 
   },
   "resolutions": {
-    "ws": "^8.17.1"
+    "ws": "8.17.x"
   },
   "devDependencies": {
     "npm-force-resolutions": "^0.0.10"
