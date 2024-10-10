@@ -4,7 +4,10 @@ const qrcode = require('qrcode');
 const fs = require('fs');
 const http = require('http');
 const socketIo = require('socket.io');
-const axios = require('axios'); // Asegúrate de tener axios instalado
+const axios = require('axios');
+const asyncHandler = require('express-async-handler');
+const { promisify } = require('util');
+const PQueue = require('p-queue');
 
 const app = express();
 const server = http.createServer(app);
@@ -15,6 +18,9 @@ let client;
 let qrCodeData = null;
 let isClientReady = false;
 let isInitializing = false;
+
+// Cola de solicitudes con máximo 5 concurrentes
+const queue = new PQueue.default({ concurrency: 5 });
 
 app.use(express.static('public'));
 
@@ -69,12 +75,12 @@ app.get('/', (req, res) => {
     `);
 });
 
-app.get('/initialize', (req, res) => {
+app.get('/initialize', asyncHandler(async (req, res) => {
     console.log('Solicitud de inicialización recibida.');
 
     if (isInitializing || isClientReady) {
         console.log('Cerrando sesión anterior...');
-        closeWhatsAppSession();
+        await closeWhatsAppSession();
     }
 
     isInitializing = true;
@@ -82,7 +88,7 @@ app.get('/initialize', (req, res) => {
     qrCodeData = null;
 
     if (fs.existsSync('./session.json')) {
-        fs.unlinkSync('./session.json');
+        await promisify(fs.unlink)('./session.json');
     }
 
     client = new Client({
@@ -117,25 +123,20 @@ app.get('/initialize', (req, res) => {
         console.error('Error del cliente:', error);
     });
 
-    client.initialize()
-        .then(() => {
-            console.log('Cliente de WhatsApp inicializado con éxito.');
-        })
-        .catch(err => {
-            console.error('Error al inicializar el cliente de WhatsApp:', err);
-        });
+    await client.initialize();
+    console.log('Cliente de WhatsApp inicializado con éxito.');
 
-    res.json({ message: 'Inicializando cliente de WhatsApp...' });
-});
+    res.json({ message: 'Cliente de WhatsApp inicializado.' });
+}));
 
-app.get('/close', (req, res) => {
-    closeWhatsAppSession();
+app.get('/close', asyncHandler(async (req, res) => {
+    await closeWhatsAppSession();
     res.json({ message: 'Sesión de WhatsApp cerrada.' });
-});
+}));
 
-function closeWhatsAppSession() {
+async function closeWhatsAppSession() {
     if (client) {
-        client.destroy();
+        await client.destroy();
         client = null;
     }
     isClientReady = false;
@@ -144,69 +145,73 @@ function closeWhatsAppSession() {
     console.log('Sesión de WhatsApp cerrada.');
 }
 
-app.get('/send-message', async (req, res) => {
+app.get('/send-message', asyncHandler(async (req, res) => {
     const { phone, message } = req.query;
 
     if (!phone || !message) {
-        console.error('Error: Se requieren los parámetros phone y message');
-        return res.status(400).json({ error: 'Se requieren los parámetros phone y message' });
+        throw new Error('Se requieren los parámetros phone y message');
     }
 
     if (!isClientReady) {
-        console.log('Cliente de WhatsApp aún no está listo.');
-        return res.status(503).json({ error: 'El cliente de WhatsApp aún no está listo. Por favor, espera.' });
+        throw new Error('El cliente de WhatsApp aún no está listo. Por favor, espera.');
     }
 
-    try {
+    await queue.add(async () => {
         const chatId = `${phone}@c.us`;
         const response = await client.sendMessage(chatId, message);
         console.log('Mensaje enviado:', response);
-        res.json({ success: true, message: 'Mensaje enviado con éxito' });
-    } catch (err) {
-        console.error('Error al enviar mensaje:', err);
-        res.status(500).json({ error: 'Error al enviar el mensaje' });
-    }
-});
+    });
 
-// Nueva ruta para enviar mensajes multimedia
-app.get('/send-message_media', async (req, res) => {
+    res.json({ success: true, message: 'Mensaje enviado con éxito' });
+}));
+
+app.get('/send-message_media', asyncHandler(async (req, res) => {
     const { phone, message, fileUrl } = req.query;
 
     if (!phone || !message || !fileUrl) {
-        console.error('Error: Se requieren los parámetros phone, message y fileUrl');
-        return res.status(400).json({ error: 'Se requieren los parámetros phone, message y fileUrl' });
+        throw new Error('Se requieren los parámetros phone, message y fileUrl');
     }
 
     if (!isClientReady) {
-        console.log('Cliente de WhatsApp aún no está listo.');
-        return res.status(503).json({ error: 'El cliente de WhatsApp aún no está listo. Por favor, espera.' });
+        throw new Error('El cliente de WhatsApp aún no está listo. Por favor, espera.');
     }
 
-    try {
-        // Descargar el archivo multimedia desde la URL
+    await queue.add(async () => {
         const response = await axios.get(fileUrl, { responseType: 'arraybuffer' });
         const fileBuffer = Buffer.from(response.data, 'binary');
-
-        // Determinar el tipo MIME del archivo
         const mimeType = response.headers['content-type'];
-        const fileName = fileUrl.split('/').pop(); // Extraer el nombre del archivo de la URL
-
-        // Crear el objeto MessageMedia para el archivo
+        const fileName = fileUrl.split('/').pop();
         const media = new MessageMedia(mimeType, fileBuffer.toString('base64'), fileName);
-
         const chatId = `${phone}@c.us`;
 
-        // Enviar el mensaje de texto
         await client.sendMessage(chatId, message);
-        // Enviar el archivo adjunto
-        const sentMedia = await client.sendMessage(chatId, media);
+        await client.sendMessage(chatId, media);
+    });
 
-        console.log('Mensaje y archivo multimedia enviados:', sentMedia);
-        res.json({ success: true, message: 'Mensaje y archivo multimedia enviados con éxito' });
-    } catch (err) {
-        console.error('Error al enviar mensaje o archivo multimedia:', err);
-        res.status(500).json({ error: 'Error al enviar el mensaje o el archivo multimedia' });
-    }
+    res.json({ success: true, message: 'Mensaje y archivo multimedia enviados con éxito' });
+}));
+
+app.get('/statusinstancias', (req, res) => {
+    res.send(`
+        <h1>Estado de la Instancia de WhatsApp</h1>
+        <p>Estado: ${isClientReady ? 'Activa' : 'Inactiva'}</p>
+        ${isClientReady ? '<button onclick="cerrarSesion()">Cerrar Sesión</button>' : ''}
+        <script>
+            function cerrarSesion() {
+                fetch('/close')
+                    .then(response => response.json())
+                    .then(data => {
+                        alert(data.message);
+                        location.reload();
+                    });
+            }
+        </script>
+    `);
+});
+
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).json({ error: err.message });
 });
 
 server.listen(port, () => {
