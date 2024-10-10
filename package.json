@@ -1,12 +1,11 @@
 {
   "name": "whatsapp-test",
   "version": "1.0.0",
-  "description": "Prueba de despliegue en Vercel con Node.js 20.x",
+  "description": "Prueba de despliegue en Render.com con Node.js 20.x",
   "main": "index.js",
   "scripts": {
     "preinstall": "npx npm-force-resolutions",
-    "start": "node index.js",
-    "start:prod": "pm2 start index.js --name whatsapp-test" 
+    "start": "node index.js" 
   },
   "dependencies": {
     "axios": "^1.7.7",
@@ -19,8 +18,7 @@
     "rimraf": "^6.0.1",
     "whatsapp-web.js": "^1.26.0",
     "ws": "^8.18.0",
-    "socket.io": "^4.7.4",
-    "pm2": "^5.3.0" 
+    "socket.io": "^4.7.4"
   },
   "resolutions": {
     "ws": "8.17.x"
