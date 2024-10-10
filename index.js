@@ -10,7 +10,7 @@ const PQueue = require('p-queue');
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server);
-const port = process.env.PORT || 3000;
+const port = 3000;
 
 let client;
 let qrCodeData = null;
