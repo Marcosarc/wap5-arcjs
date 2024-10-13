@@ -168,12 +168,11 @@ app.get('/send-message', async (req, res) => {
 
 
 
-
 app.get('/send-message_media', async (req, res) => {
-    const { phone, message, fileUrl, fileName } = req.query; // Agregamos fileName
+    const { phone, message, fileUrl, fileName } = req.query;
 
-    if (!phone || !message || !fileUrl || !fileName) {
-        return res.status(400).json({ error: 'Se requieren los parámetros phone, message, fileUrl y fileName' });
+    if (!phone || !message || !fileUrl) {
+        return res.status(400).json({ error: 'Se requieren los parámetros phone, message y fileUrl' });
     }
 
     if (!isClientReady) {
@@ -183,10 +182,14 @@ app.get('/send-message_media', async (req, res) => {
     try {
         await queue.add(async () => {
             const response = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+
+            // Si fileName no está presente, se usa el nombre del archivo extraído del fileUrl
+            const fileNameToUse = fileName || fileUrl.split('/').pop();
+
             const media = new MessageMedia(
                 response.headers['content-type'],
                 Buffer.from(response.data).toString('base64'),
-                fileName // Usamos el fileName proporcionado
+                fileNameToUse
             );
             const chatId = `${phone}@c.us`;
             await client.sendMessage(chatId, message);
