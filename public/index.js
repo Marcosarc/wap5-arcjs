@@ -166,11 +166,14 @@ app.get('/send-message', async (req, res) => {
     }
 });
 
-app.get('/send-message_media', async (req, res) => {
-    const { phone, message, fileUrl } = req.query;
 
-    if (!phone || !message || !fileUrl) {
-        return res.status(400).json({ error: 'Se requieren los parámetros phone, message y fileUrl' });
+
+
+app.get('/send-message_media', async (req, res) => {
+    const { phone, message, fileUrl, fileName } = req.query; // Agregamos fileName
+
+    if (!phone || !message || !fileUrl || !fileName) {
+        return res.status(400).json({ error: 'Se requieren los parámetros phone, message, fileUrl y fileName' });
     }
 
     if (!isClientReady) {
@@ -183,7 +186,7 @@ app.get('/send-message_media', async (req, res) => {
             const media = new MessageMedia(
                 response.headers['content-type'],
                 Buffer.from(response.data).toString('base64'),
-                fileUrl.split('/').pop()
+                fileName // Usamos el fileName proporcionado
             );
             const chatId = `${phone}@c.us`;
             await client.sendMessage(chatId, message);
@@ -195,6 +198,8 @@ app.get('/send-message_media', async (req, res) => {
         res.status(500).json({ error: 'Error al enviar el mensaje multimedia' });
     }
 });
+
+
 
 app.get('/statusinstancias', (req, res) => {
     res.send(`
