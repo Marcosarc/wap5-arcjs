@@ -33,7 +33,7 @@ app.use((req, res, next) => {
 // Middleware para procesar JSON en el body
 app.use(express.json());
 
-/* 
+/*
   Objeto "sessions" para almacenar todas las sesiones activas.
   Cada sesión tendrá la siguiente estructura:
   {
@@ -114,9 +114,11 @@ async function initializeSession(sessionId) {
           '--disable-accelerated-2d-canvas',
           '--no-first-run',
           '--no-zygote',
-          '--single-process',
+          // '--single-process', // Se ha eliminado para permitir múltiples procesos
           '--disable-gpu'
-        ]
+        ],
+        // Configurar un directorio de usuario único para cada sesión
+        userDataDir: `./user_data/session-${sessionId}`
       },
       session: null // Por ahora, sin sesión almacenada
     });
@@ -218,7 +220,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-/* Crear sesión (POST /sessions)  
+/* Crear sesión (POST /sessions)
    Se espera en el body JSON: { id: "nombre_de_sesion" } */
 app.post('/sessions', async (req, res) => {
   const { id } = req.body;
@@ -284,7 +286,7 @@ app.delete('/sessions/:id', async (req, res) => {
    ENDPOINTS PARA ENVIAR MENSAJES
 =================================== */
 
-/* Envío de mensaje simple para una sesión (GET /sessions/:id/send-message)  
+/* Envío de mensaje simple para una sesión (GET /sessions/:id/send-message)
    Parámetros query: phone y message */
 app.get('/sessions/:id/send-message', async (req, res) => {
   const sessionId = req.params.id;
@@ -314,7 +316,7 @@ app.get('/sessions/:id/send-message', async (req, res) => {
   }
 });
 
-/* Envío de mensaje con archivo multimedia para una sesión (GET /sessions/:id/send-message_media)  
+/* Envío de mensaje con archivo multimedia para una sesión (GET /sessions/:id/send-message_media)
    Parámetros query: phone, message, fileUrl y opcionalmente fileName */
 app.get('/sessions/:id/send-message_media', async (req, res) => {
   const sessionId = req.params.id;
