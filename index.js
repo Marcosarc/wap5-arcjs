@@ -1,3 +1,4 @@
+/*** script index.js ***/
 const express = require('express');
 const { Client, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
@@ -5,7 +6,8 @@ const fs = require('fs').promises;
 const http = require('http');
 const socketIo = require('socket.io');
 const axios = require('axios');
-const PQueue = require('p-queue');
+// Corrección en la importación de PQueue para versiones recientes:
+const PQueue = require('p-queue').default;
 
 const app = express();
 const server = http.createServer(app);
@@ -114,12 +116,22 @@ app.get('/initialize', async (req, res) => {
     qrCodeData = null;
 
     try {
+        // Intentamos eliminar la sesión anterior, si existe
         await fs.unlink('./session.json').catch(() => {});
 
         client = new Client({
             puppeteer: {
                 headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote', '--single-process', '--disable-gpu']
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',
+                    '--disable-gpu'
+                ]
             },
             session: null
         });
