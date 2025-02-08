@@ -147,6 +147,75 @@ async function initializeSession(sessionId) {
 }
 
 /* ================================
+   ENDPOINTS ADICIONALES
+=================================== */
+
+/* 
+  Nuevo endpoint: GET /creasessions  
+  Parámetros query: name (nombre de la sesión) y token  
+  Crea (o reinicializa) la sesión con el nombre indicado y devuelve una página HTML
+  que muestra:
+    - El ID de la sesión.
+    - Su estado (Conectado, Inicializando o Desconectado).
+    - El QR (si está disponible).
+    - Un botón para cerrar la sesión.
+*/
+app.get('/creasessions', async (req, res) => {
+  const sessionName = req.query.name;
+  if (!sessionName) {
+    return res.status(400).send("Debe proporcionar el parámetro 'name' con el nombre de la sesión.");
+  }
+  try {
+    const session = await initializeSession(sessionName);
+    const status = session.isClientReady
+      ? "Conectado"
+      : (session.isInitializing ? "Inicializando" : "Desconectado");
+      
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="es">
+      <head>
+        <meta charset="UTF-8">
+        <title>Sesión ${sessionName}</title>
+        <script src="/socket.io/socket.io.js"></script>
+      </head>
+      <body>
+        <h1>Sesión: ${sessionName}</h1>
+        <p>
+          <strong>ID:</strong> ${sessionName} - 
+          <strong>Estado:</strong> ${status}
+        </p>
+        ${session.qrCodeData ? `<img src="${session.qrCodeData}" alt="QR Code" width="150"/>` : '<p>Esperando QR...</p>'}
+        <br/><br/>
+        <button onclick="cerrarSesion()">Cerrar Sesión</button>
+        <script>
+          const token = "${ACCESS_TOKEN}";
+          const socket = io();
+          socket.on('session_updated', (data) => {
+            if(data.id === "${sessionName}") {
+              location.reload();
+            }
+          });
+          function cerrarSesion() {
+            fetch("/sessions/${sessionName}?token=" + token, { method: "DELETE" })
+              .then(response => response.json())
+              .then(data => { 
+                alert(data.message); 
+                location.reload();
+              })
+              .catch(err => console.error(err));
+          }
+        </script>
+      </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error("Error al crear la sesión:", error);
+    res.status(500).send("Error al crear la sesión");
+  }
+});
+
+/* ================================
    RUTAS Y CRUD DE SESIONES
 =================================== */
 
