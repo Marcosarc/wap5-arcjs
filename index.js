@@ -1,4 +1,3 @@
-/*** Primera parte - index.js ***/
 const express = require('express');
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
@@ -7,6 +6,12 @@ const http = require('http');
 const socketIo = require('socket.io');
 const axios = require('axios');
 const PQueue = require('p-queue').default;
+
+// Crear directorio de sesiones si no existe
+const fs_sync = require('fs');
+if (!fs_sync.existsSync('./sessions')) {
+  fs_sync.mkdirSync('./sessions', { recursive: true });
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -54,19 +59,37 @@ function createChatId(phone) {
 async function closeSession(sessionId) {
   const session = sessions[sessionId];
   if (session) {
-    if (session.client && session.client.pupPage) {
-      try {
-        await session.client.destroy();
-      } catch (error) {
-        console.error('Error al destruir la sesión:', error);
+    try {
+      if (session.client) {
+        if (session.client.pupPage) {
+          try {
+            await session.client.pupPage.close();
+          } catch (err) {
+            console.error('Error al cerrar la página:', err);
+          }
+        }
+        if (session.client.browser) {
+          try {
+            await session.client.browser.close();
+          } catch (err) {
+            console.error('Error al cerrar el navegador:', err);
+          }
+        }
+        try {
+          await session.client.destroy();
+        } catch (err) {
+          console.error('Error al destruir el cliente:', err);
+        }
       }
+    } catch (error) {
+      console.error('Error al cerrar la sesión:', error);
+    } finally {
+      session.client = null;
+      session.isClientReady = false;
+      session.isInitializing = false;
+      session.qrCodeData = null;
+      io.emit('session_updated', { id: sessionId, ...session });
     }
-    session.client = null;
-    session.isClientReady = false;
-    session.isInitializing = false;
-    session.qrCodeData = null;
-    
-    io.emit('session_updated', { id: sessionId, ...session });
   }
 }
 
@@ -98,23 +121,35 @@ async function initializeSession(sessionId) {
           '--disable-accelerated-2d-canvas',
           '--no-first-run',
           '--no-zygote',
-          '--single-process',
           '--disable-gpu',
           '--disable-extensions',
-          '--disable-software-rasterizer'
+          '--disable-software-rasterizer',
+          '--disable-features=site-per-process',
+          '--disable-web-security',
+          '--disable-notifications',
+          '--ignore-certificate-errors',
+          '--allow-running-insecure-content'
         ],
-        timeout: 60000,
-        protocolTimeout: 60000,
+        timeout: 100000,
+        protocolTimeout: 100000,
+        browserWSEndpoint: null,
+        ignoreHTTPSErrors: true,
         defaultViewport: {
           width: 1280,
           height: 720
-        }
+        },
+        handleSIGINT: true,
+        handleSIGTERM: true,
+        handleSIGHUP: true
       },
       authStrategy: new LocalAuth({
-        clientId: sessionId
+        clientId: sessionId,
+        dataPath: './sessions'
       }),
-      qrMaxRetries: 3,
-      restartOnAuthFail: true
+      qrMaxRetries: 5,
+      restartOnAuthFail: true,
+      takeoverOnConflict: true,
+      takeoverTimeoutMs: 60000
     });
 
     session.client.on('qr', async (qr) => {
@@ -132,21 +167,37 @@ async function initializeSession(sessionId) {
       io.emit('session_updated', { id: sessionId, isClientReady: session.isClientReady });
     });
 
-    session.client.on('disconnected', async () => {
-      console.log(`Sesión ${sessionId} desconectada`);
+    session.client.on('disconnected', async (reason) => {
+      console.log(`Sesión ${sessionId} desconectada. Razón:`, reason);
       await closeSession(sessionId);
     });
 
-    session.client.on('auth_failure', async () => {
-      console.log(`Fallo de autenticación en sesión ${sessionId}`);
+    session.client.on('auth_failure', async (msg) => {
+      console.log(`Fallo de autenticación en sesión ${sessionId}:`, msg);
       await closeSession(sessionId);
     });
 
-    session.client.on('message_create', message => {
-      if (message.body === '!ping') message.reply('pong');
+    session.client.on('error', async (error) => {
+      console.error(`Error en sesión ${sessionId}:`, error);
+      if (error.message.includes('Protocol error') || error.message.includes('Target closed')) {
+        await closeSession(sessionId);
+        session.isInitializing = false;
+      }
     });
 
-    await session.client.initialize();
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        await session.client.initialize();
+        break;
+      } catch (error) {
+        retries--;
+        console.error(`Error al inicializar (intento ${3-retries}/3):`, error);
+        if (retries === 0) throw error;
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+    }
+
     session.isInitializing = false;
     return session;
   } catch (error) {
@@ -155,8 +206,6 @@ async function initializeSession(sessionId) {
     throw error;
   }
 }
-
-/*** Segunda parte - index.js ***/
 
 app.get('/creasessions', async (req, res) => {
   const sessionName = req.query.name;
@@ -176,27 +225,40 @@ app.get('/creasessions', async (req, res) => {
         <meta charset="UTF-8">
         <title>Sesión ${sessionName}</title>
         <script src="/socket.io/socket.io.js"></script>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 20px; }
+          .qr-container { margin: 20px 0; }
+          button { padding: 10px 20px; margin: 10px 0; }
+        </style>
       </head>
       <body>
         <h1>Sesión: ${sessionName}</h1>
         <p>
-          <strong>ID:</strong> ${sessionName} - 
-          <strong>Estado:</strong> ${status}
+          <strong>ID:</strong> ${sessionName}<br>
+          <strong>Estado:</strong> <span id="status">${status}</span>
         </p>
-        ${session.qrCodeData ? `<img src="${session.qrCodeData}" alt="QR Code" width="150"/>` : '<p>Esperando QR...</p>'}
-        <br/><br/>
+        <div class="qr-container">
+          ${session.qrCodeData ? 
+            `<img src="${session.qrCodeData}" alt="QR Code" width="200"/>` : 
+            '<p>Esperando QR...</p>'}
+        </div>
         <button onclick="cerrarSesion()">Cerrar Sesión</button>
         <script>
           const token = "${ACCESS_TOKEN}";
           const sessionName = "${sessionName}";
           const socket = io();
+          
           socket.on('session_updated', (data) => {
             if(data.id === sessionName) {
               location.reload();
             }
           });
+
           function cerrarSesion() {
-            fetch("/sessions/" + sessionName + "?token=" + token, { method: "DELETE" })
+            if(confirm('¿Está seguro de cerrar la sesión?')) {
+              fetch("/sessions/" + sessionName + "?token=" + token, { 
+                method: "DELETE" 
+              })
               .then(response => response.json())
               .then(data => { 
                 if(data.message) {
@@ -210,6 +272,7 @@ app.get('/creasessions', async (req, res) => {
                 console.error(err);
                 alert("Ocurrió un error al cerrar la sesión.");
               });
+            }
           }
         </script>
       </body>
@@ -223,13 +286,16 @@ app.get('/creasessions', async (req, res) => {
 
 app.get('/', (req, res) => {
   let sessionListHTML = Object.values(sessions).map(session => `
-    <li>
-      <strong>ID:</strong> ${session.id} - 
+    <li class="session-item">
+      <strong>ID:</strong> ${session.id}<br>
       <strong>Estado:</strong> ${session.isClientReady ? 'Conectado' : (session.isInitializing ? 'Inicializando' : 'Desconectado')}
-      ${session.qrCodeData ? `<br/><img src="${session.qrCodeData}" alt="QR Code" width="150"/>` : ''}
-      <br/>
-      <button onclick="closeSession('${session.id}')">Cerrar Sesión</button>
-      <button onclick="initializeSession('${session.id}')">Reinicializar Sesión</button>
+      <div class="qr-container">
+        ${session.qrCodeData ? `<img src="${session.qrCodeData}" alt="QR Code" width="200"/>` : ''}
+      </div>
+      <div class="button-container">
+        <button onclick="closeSession('${session.id}')">Cerrar Sesión</button>
+        <button onclick="initializeSession('${session.id}')">Reinicializar Sesión</button>
+      </div>
     </li>
   `).join('');
 
@@ -240,50 +306,84 @@ app.get('/', (req, res) => {
       <meta charset="UTF-8">
       <title>Administración de Sesiones de WhatsApp</title>
       <script src="/socket.io/socket.io.js"></script>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .session-item { margin-bottom: 20px; padding: 15px; border: 1px solid #ddd; }
+        .qr-container { margin: 10px 0; }
+        .button-container { margin-top: 10px; }
+        button { padding: 8px 16px; margin-right: 10px; }
+        #createSessionForm { margin-top: 20px; }
+      </style>
     </head>
     <body>
       <h1>Sesiones de WhatsApp</h1>
-      <ul id="sessionList">
+      <ul id="sessionList" style="list-style: none; padding: 0;">
         ${sessionListHTML}
       </ul>
       <h2>Crear Nueva Sesión</h2>
       <form id="createSessionForm">
-        <input type="text" id="sessionId" placeholder="ID de Sesión" required />
+        <input type="text" id="sessionId" placeholder="ID de Sesión" required 
+               style="padding: 8px; margin-right: 10px;" />
         <button type="submit">Crear Sesión</button>
       </form>
       <script>
         const ACCESS_TOKEN = "${ACCESS_TOKEN}";
         const socket = io();
+        
         socket.on('session_updated', (data) => {
           location.reload();
         });
+
         document.getElementById('createSessionForm').addEventListener('submit', async function(e) {
           e.preventDefault();
           const sessionId = document.getElementById('sessionId').value;
-          const res = await fetch('/sessions?token=' + ACCESS_TOKEN, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ id: sessionId })
-          });
-          const data = await res.json();
-          alert(data.message);
-          location.reload();
-        });
-        async function closeSession(id) {
-          const res = await fetch('/sessions/' + id + '?token=' + ACCESS_TOKEN, { method: 'DELETE' });
-          const data = await res.json();
-          if(data.message) {
+          try {
+            const res = await fetch('/sessions?token=' + ACCESS_TOKEN, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ id: sessionId })
+            });
+            const data = await res.json();
             alert(data.message);
-          } else if(data.error) {
-            alert("Error: " + data.error);
+            location.reload();
+          } catch (error) {
+            alert('Error al crear la sesión');
+            console.error(error);
           }
-          location.reload();
+        });
+
+        async function closeSession(id) {
+          if(confirm('¿Está seguro de cerrar la sesión?')) {
+            try {
+              const res = await fetch('/sessions/' + id + '?token=' + ACCESS_TOKEN, { 
+                method: 'DELETE' 
+              });
+              const data = await res.json();
+              if(data.message) {
+                alert(data.message);
+              } else if(data.error) {
+                alert("Error: " + data.error);
+              }
+              location.reload();
+            } catch (error) {
+              alert('Error al cerrar la sesión');
+              console.error(error);
+            }
+          }
         }
+
         async function initializeSession(id) {
-          const res = await fetch('/sessions/' + id + '/initialize?token=' + ACCESS_TOKEN, { method: 'PUT' });
-          const data = await res.json();
-          alert(data.message);
-          location.reload();
+          try {
+            const res = await fetch('/sessions/' + id + '/initialize?token=' + ACCESS_TOKEN, { 
+              method: 'PUT' 
+            });
+            const data = await res.json();
+            alert(data.message);
+            location.reload();
+          } catch (error) {
+            alert('Error al inicializar la sesión');
+            console.error(error);
+          }
         }
       </script>
     </body>
@@ -415,5 +515,3 @@ app.get('/sessions/:id/send-message_media', async (req, res) => {
 server.listen(port, () => {
   console.log(`Servidor API corriendo en http://localhost:${port}`);
 });
-
-
