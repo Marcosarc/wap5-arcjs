@@ -1,6 +1,6 @@
-/*** script index.js ***/
+/*** Primera parte - index.js ***/
 const express = require('express');
-const { Client, MessageMedia } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const fs = require('fs').promises;
 const http = require('http');
@@ -13,16 +13,14 @@ const server = http.createServer(app);
 const io = socketIo(server);
 const port = process.env.PORT || 3000;
 
-// Configura el token de acceso (puedes definirlo también mediante variable de entorno)
+// Configura el token de acceso
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || '1305811408';
 
-// Middleware para proteger los endpoints con token (excepto las rutas de socket.io)
+// Middleware para proteger los endpoints
 app.use((req, res, next) => {
-  // Excluir las rutas que usa socket.io para no afectar su funcionamiento
   if (req.path.startsWith('/socket.io/')) {
     return next();
   }
-  // Leer el token enviado por GET (?token=...)
   const token = req.query.token;
   if (!token || token !== ACCESS_TOKEN) {
     return res.status(401).json({ error: 'Token inválido o no proporcionado.' });
@@ -30,24 +28,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// Middleware para procesar JSON en el body
 app.use(express.json());
 
-/* 
-  Objeto "sessions" para almacenar todas las sesiones activas.
-  Cada sesión tendrá la siguiente estructura:
-  {
-    id: <identificador>,
-    client: <instancia de Client de whatsapp-web.js>,
-    queue: <cola para envío de mensajes>,
-    qrCodeData: <código QR en formato DataURL>,
-    isClientReady: <boolean>,
-    isInitializing: <boolean>
-  }
-*/
 const sessions = {};
 
-/* Función para crear el objeto de sesión */
 function createSessionObject(id) {
   return {
     id,
@@ -59,54 +43,50 @@ function createSessionObject(id) {
   };
 }
 
-/* Función auxiliar para validar el número de teléfono */
 function validatePhoneNumber(phone) {
-  return /^\d+$/.test(phone); // Validación básica; ajusta según tus necesidades
+  return /^\d+$/.test(phone);
 }
 
-/* Función auxiliar para crear el chatId de WhatsApp */
 function createChatId(phone) {
   return `${phone}@c.us`;
 }
 
-/* Función para cerrar una sesión de WhatsApp */
 async function closeSession(sessionId) {
   const session = sessions[sessionId];
-  if (session && session.client) {
-    try {
-      await session.client.destroy();
-    } catch (error) {
-      console.error('Error al destruir la sesión:', error);
+  if (session) {
+    if (session.client && session.client.pupPage) {
+      try {
+        await session.client.destroy();
+      } catch (error) {
+        console.error('Error al destruir la sesión:', error);
+      }
     }
     session.client = null;
-  }
-  if (session) {
     session.isClientReady = false;
     session.isInitializing = false;
     session.qrCodeData = null;
+    
+    io.emit('session_updated', { id: sessionId, ...session });
   }
-  // Emitir evento de actualización para notificar cambios en tiempo real
-  io.emit('session_updated', { id: sessionId, ...session });
 }
 
-/* Función para inicializar (o reinicializar) una sesión */
 async function initializeSession(sessionId) {
   let session = sessions[sessionId];
   if (!session) {
     session = createSessionObject(sessionId);
     sessions[sessionId] = session;
   }
-  // Si la sesión ya está inicializando o lista, se cierra primero
-  if (session.isInitializing || session.isClientReady) {
-    await closeSession(sessionId);
+
+  if (session.isInitializing) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
   }
-  session.isInitializing = true;
-  session.isClientReady = false;
-  session.qrCodeData = null;
 
   try {
-    // (Opcional) Si trabajas con persistencia, elimina el archivo de sesión específico
-    // await fs.unlink(`./session-${sessionId}.json`).catch(() => {});
+    await closeSession(sessionId);
+    
+    session.isInitializing = true;
+    session.isClientReady = false;
+    session.qrCodeData = null;
 
     session.client = new Client({
       puppeteer: {
@@ -119,24 +99,47 @@ async function initializeSession(sessionId) {
           '--no-first-run',
           '--no-zygote',
           '--single-process',
-          '--disable-gpu'
-        ]
-        // Si es necesario, puedes especificar el executablePath:
-        // executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium-browser'
+          '--disable-gpu',
+          '--disable-extensions',
+          '--disable-software-rasterizer'
+        ],
+        timeout: 60000,
+        protocolTimeout: 60000,
+        defaultViewport: {
+          width: 1280,
+          height: 720
+        }
       },
-      session: null // Por ahora, sin sesión almacenada
+      authStrategy: new LocalAuth({
+        clientId: sessionId
+      }),
+      qrMaxRetries: 3,
+      restartOnAuthFail: true
     });
 
-    // Eventos del cliente:
     session.client.on('qr', async (qr) => {
       session.qrCodeData = await qrcode.toDataURL(qr);
-      io.emit('session_updated', { id: sessionId, qrCodeData: session.qrCodeData, isClientReady: session.isClientReady });
+      io.emit('session_updated', { 
+        id: sessionId, 
+        qrCodeData: session.qrCodeData, 
+        isClientReady: session.isClientReady 
+      });
     });
 
     session.client.on('ready', () => {
       session.isClientReady = true;
       session.qrCodeData = null;
       io.emit('session_updated', { id: sessionId, isClientReady: session.isClientReady });
+    });
+
+    session.client.on('disconnected', async () => {
+      console.log(`Sesión ${sessionId} desconectada`);
+      await closeSession(sessionId);
+    });
+
+    session.client.on('auth_failure', async () => {
+      console.log(`Fallo de autenticación en sesión ${sessionId}`);
+      await closeSession(sessionId);
     });
 
     session.client.on('message_create', message => {
@@ -148,26 +151,13 @@ async function initializeSession(sessionId) {
     return session;
   } catch (error) {
     session.isInitializing = false;
+    console.error(`Error al inicializar sesión ${sessionId}:`, error);
     throw error;
   }
 }
 
-/* ================================
-   ENDPOINTS ADICIONALES
-=================================== */
+/*** Segunda parte - index.js ***/
 
-/* 
-  Nuevo endpoint: GET /creasessions  
-  Parámetros query: name (nombre de la sesión) y token  
-  Crea (o reinicializa) la sesión con el nombre indicado y devuelve una página HTML
-  que muestra:
-    - El ID de la sesión.
-    - Su estado (Conectado, Inicializando o Desconectado).
-    - El QR (si está disponible).
-    - Un botón para cerrar la sesión.
-  
-  Nota: La demora en generar el QR puede ser propia de la inicialización de Puppeteer en Render.
-*/
 app.get('/creasessions', async (req, res) => {
   const sessionName = req.query.name;
   if (!sessionName) {
@@ -231,11 +221,6 @@ app.get('/creasessions', async (req, res) => {
   }
 });
 
-/* ================================
-   RUTAS Y CRUD DE SESIONES
-=================================== */
-
-/* Página principal que muestra el estado de las sesiones */
 app.get('/', (req, res) => {
   let sessionListHTML = Object.values(sessions).map(session => `
     <li>
@@ -267,10 +252,9 @@ app.get('/', (req, res) => {
         <button type="submit">Crear Sesión</button>
       </form>
       <script>
-        const ACCESS_TOKEN = "${ACCESS_TOKEN}"; // Se incluye el token para las llamadas fetch
+        const ACCESS_TOKEN = "${ACCESS_TOKEN}";
         const socket = io();
         socket.on('session_updated', (data) => {
-          // Al recibir una actualización se recarga la página
           location.reload();
         });
         document.getElementById('createSessionForm').addEventListener('submit', async function(e) {
@@ -307,8 +291,7 @@ app.get('/', (req, res) => {
   `);
 });
 
-/* Crear sesión (POST /sessions)  
-   Se espera en el body JSON: { id: "nombre_de_sesion" } */
+// Rutas API
 app.post('/sessions', async (req, res) => {
   const { id } = req.body;
   if (!id) {
@@ -326,12 +309,10 @@ app.post('/sessions', async (req, res) => {
   }
 });
 
-/* Listar todas las sesiones (GET /sessions) */
 app.get('/sessions', (req, res) => {
   res.json(Object.values(sessions));
 });
 
-/* Obtener detalles de una sesión (GET /sessions/:id) */
 app.get('/sessions/:id', (req, res) => {
   const session = sessions[req.params.id];
   if (!session) {
@@ -340,7 +321,6 @@ app.get('/sessions/:id', (req, res) => {
   res.json(session);
 });
 
-/* Inicializar (o reinicializar) una sesión (PUT /sessions/:id/initialize) */
 app.put('/sessions/:id/initialize', async (req, res) => {
   const sessionId = req.params.id;
   try {
@@ -352,7 +332,6 @@ app.put('/sessions/:id/initialize', async (req, res) => {
   }
 });
 
-/* Eliminar una sesión (DELETE /sessions/:id) */
 app.delete('/sessions/:id', async (req, res) => {
   const sessionId = req.params.id;
   if (!sessions[sessionId]) {
@@ -369,12 +348,6 @@ app.delete('/sessions/:id', async (req, res) => {
   }
 });
 
-/* ================================
-   ENDPOINTS PARA ENVIAR MENSAJES
-=================================== */
-
-/* Envío de mensaje simple para una sesión (GET /sessions/:id/send-message)  
-   Parámetros query: phone y message */
 app.get('/sessions/:id/send-message', async (req, res) => {
   const sessionId = req.params.id;
   const session = sessions[sessionId];
@@ -403,8 +376,6 @@ app.get('/sessions/:id/send-message', async (req, res) => {
   }
 });
 
-/* Envío de mensaje con archivo multimedia para una sesión (GET /sessions/:id/send-message_media)  
-   Parámetros query: phone, message, fileUrl y opcionalmente fileName */
 app.get('/sessions/:id/send-message_media', async (req, res) => {
   const sessionId = req.params.id;
   const session = sessions[sessionId];
@@ -441,7 +412,8 @@ app.get('/sessions/:id/send-message_media', async (req, res) => {
   }
 });
 
-/* Iniciar el servidor */
 server.listen(port, () => {
   console.log(`Servidor API corriendo en http://localhost:${port}`);
 });
+
+
