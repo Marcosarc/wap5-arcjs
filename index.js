@@ -73,7 +73,11 @@ function createChatId(phone) {
 async function closeSession(sessionId) {
   const session = sessions[sessionId];
   if (session && session.client) {
-    await session.client.destroy();
+    try {
+      await session.client.destroy();
+    } catch (error) {
+      console.error('Error al destruir la sesión:', error);
+    }
     session.client = null;
   }
   if (session) {
@@ -211,7 +215,7 @@ app.get('/creasessions', async (req, res) => {
     `);
   } catch (error) {
     console.error("Error al crear la sesión:", error);
-    res.status(500).send("Error al crear la sesión");
+    res.status(500).send("Error al crear la sesión: " + error.message);
   }
 });
 
