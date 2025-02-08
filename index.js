@@ -13,6 +13,23 @@ const server = http.createServer(app);
 const io = socketIo(server);
 const port = process.env.PORT || 3000;
 
+// Configura el token de acceso (puedes definirlo también mediante variable de entorno)
+const ACCESS_TOKEN = process.env.ACCESS_TOKEN || '1305811408';
+
+// Middleware para proteger los endpoints con token (excepto las rutas de socket.io)
+app.use((req, res, next) => {
+  // Excluir las rutas que usa socket.io para no afectar su funcionamiento
+  if (req.path.startsWith('/socket.io/')) {
+    return next();
+  }
+  // Leer el token enviado por GET (?token=...)
+  const token = req.query.token;
+  if (!token || token !== ACCESS_TOKEN) {
+    return res.status(401).json({ error: 'Token inválido o no proporcionado.' });
+  }
+  next();
+});
+
 // Middleware para procesar JSON en el body
 app.use(express.json());
 
@@ -165,6 +182,7 @@ app.get('/', (req, res) => {
         <button type="submit">Crear Sesión</button>
       </form>
       <script>
+        const ACCESS_TOKEN = "${ACCESS_TOKEN}"; // Se incluye el token para las llamadas fetch
         const socket = io();
         socket.on('session_updated', (data) => {
           // Al recibir una actualización se recarga la página
@@ -173,7 +191,7 @@ app.get('/', (req, res) => {
         document.getElementById('createSessionForm').addEventListener('submit', async function(e) {
           e.preventDefault();
           const sessionId = document.getElementById('sessionId').value;
-          const res = await fetch('/sessions', {
+          const res = await fetch('/sessions?token=' + ACCESS_TOKEN, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ id: sessionId })
@@ -183,13 +201,13 @@ app.get('/', (req, res) => {
           location.reload();
         });
         async function closeSession(id) {
-          const res = await fetch('/sessions/' + id, { method: 'DELETE' });
+          const res = await fetch('/sessions/' + id + '?token=' + ACCESS_TOKEN, { method: 'DELETE' });
           const data = await res.json();
           alert(data.message);
           location.reload();
         }
         async function initializeSession(id) {
-          const res = await fetch('/sessions/' + id + '/initialize', { method: 'PUT' });
+          const res = await fetch('/sessions/' + id + '/initialize?token=' + ACCESS_TOKEN, { method: 'PUT' });
           const data = await res.json();
           alert(data.message);
           location.reload();
