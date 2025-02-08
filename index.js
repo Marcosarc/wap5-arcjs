@@ -121,6 +121,8 @@ async function initializeSession(sessionId) {
           '--single-process',
           '--disable-gpu'
         ]
+        // Si es necesario, puedes especificar el executablePath:
+        // executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium-browser'
       },
       session: null // Por ahora, sin sesión almacenada
     });
@@ -163,6 +165,8 @@ async function initializeSession(sessionId) {
     - Su estado (Conectado, Inicializando o Desconectado).
     - El QR (si está disponible).
     - Un botón para cerrar la sesión.
+  
+  Nota: La demora en generar el QR puede ser propia de la inicialización de Puppeteer en Render.
 */
 app.get('/creasessions', async (req, res) => {
   const sessionName = req.query.name;
@@ -194,20 +198,28 @@ app.get('/creasessions', async (req, res) => {
         <button onclick="cerrarSesion()">Cerrar Sesión</button>
         <script>
           const token = "${ACCESS_TOKEN}";
+          const sessionName = "${sessionName}";
           const socket = io();
           socket.on('session_updated', (data) => {
-            if(data.id === "${sessionName}") {
+            if(data.id === sessionName) {
               location.reload();
             }
           });
           function cerrarSesion() {
-            fetch("/sessions/${sessionName}?token=" + token, { method: "DELETE" })
+            fetch("/sessions/" + sessionName + "?token=" + token, { method: "DELETE" })
               .then(response => response.json())
               .then(data => { 
-                alert(data.message); 
+                if(data.message) {
+                  alert(data.message);
+                } else if(data.error) {
+                  alert("Error: " + data.error);
+                }
                 location.reload();
               })
-              .catch(err => console.error(err));
+              .catch(err => {
+                console.error(err);
+                alert("Ocurrió un error al cerrar la sesión.");
+              });
           }
         </script>
       </body>
@@ -276,7 +288,11 @@ app.get('/', (req, res) => {
         async function closeSession(id) {
           const res = await fetch('/sessions/' + id + '?token=' + ACCESS_TOKEN, { method: 'DELETE' });
           const data = await res.json();
-          alert(data.message);
+          if(data.message) {
+            alert(data.message);
+          } else if(data.error) {
+            alert("Error: " + data.error);
+          }
           location.reload();
         }
         async function initializeSession(id) {
