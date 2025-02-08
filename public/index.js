@@ -1,3 +1,4 @@
+/*** script index.js ***/
 const express = require('express');
 const { Client, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
@@ -5,7 +6,8 @@ const fs = require('fs').promises;
 const http = require('http');
 const socketIo = require('socket.io');
 const axios = require('axios');
-const PQueue = require('p-queue');
+// Corrección en la importación de PQueue para versiones recientes:
+const PQueue = require('p-queue').default;
 
 const app = express();
 const server = http.createServer(app);
@@ -17,7 +19,28 @@ let qrCodeData = null;
 let isClientReady = false;
 let isInitializing = false;
 
-const queue = new PQueue.default({ concurrency: 3 });
+const queue = new PQueue({ concurrency: 3 });
+
+// Función auxiliar para cerrar la sesión de WhatsApp
+async function closeWhatsAppSession() {
+    if (client) {
+        await client.destroy();
+        client = null;
+    }
+    isClientReady = false;
+    isInitializing = false;
+    qrCodeData = null;
+}
+
+// Función auxiliar para validar el número de teléfono
+function validatePhoneNumber(phone) {
+    return /^\d+$/.test(phone); // Validación básica, ajusta según sea necesario
+}
+
+// Función auxiliar para crear el chatId
+function createChatId(phone) {
+    return `${phone}@c.us`;
+}
 
 app.get('/', (_, res) => {
     res.send(`
@@ -93,12 +116,22 @@ app.get('/initialize', async (req, res) => {
     qrCodeData = null;
 
     try {
+        // Intentamos eliminar la sesión anterior, si existe
         await fs.unlink('./session.json').catch(() => {});
 
         client = new Client({
             puppeteer: {
                 headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote', '--single-process', '--disable-gpu']
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',
+                    '--disable-gpu'
+                ]
             },
             session: null
         });
@@ -133,21 +166,15 @@ app.get('/close', async (req, res) => {
     res.json({ message: 'Sesión de WhatsApp cerrada.' });
 });
 
-async function closeWhatsAppSession() {
-    if (client) {
-        await client.destroy();
-        client = null;
-    }
-    isClientReady = false;
-    isInitializing = false;
-    qrCodeData = null;
-}
-
 app.get('/send-message', async (req, res) => {
     const { phone, message } = req.query;
 
     if (!phone || !message) {
         return res.status(400).json({ error: 'Se requieren los parámetros phone y message' });
+    }
+
+    if (!validatePhoneNumber(phone)) {
+        return res.status(400).json({ error: 'Número de teléfono no válido' });
     }
 
     if (!isClientReady) {
@@ -156,7 +183,7 @@ app.get('/send-message', async (req, res) => {
 
     try {
         await queue.add(async () => {
-            const chatId = `${phone}@c.us`;
+            const chatId = createChatId(phone);
             await client.sendMessage(chatId, message);
         });
         res.json({ success: true, message: 'Mensaje enviado con éxito' });
@@ -166,13 +193,15 @@ app.get('/send-message', async (req, res) => {
     }
 });
 
-
-
 app.get('/send-message_media', async (req, res) => {
     const { phone, message, fileUrl, fileName } = req.query;
 
     if (!phone || !message || !fileUrl) {
         return res.status(400).json({ error: 'Se requieren los parámetros phone, message y fileUrl' });
+    }
+
+    if (!validatePhoneNumber(phone)) {
+        return res.status(400).json({ error: 'Número de teléfono no válido' });
     }
 
     if (!isClientReady) {
@@ -183,7 +212,6 @@ app.get('/send-message_media', async (req, res) => {
         await queue.add(async () => {
             const response = await axios.get(fileUrl, { responseType: 'arraybuffer' });
 
-            // Si fileName no está presente, se usa el nombre del archivo extraído del fileUrl
             const fileNameToUse = fileName || fileUrl.split('/').pop();
 
             const media = new MessageMedia(
@@ -191,7 +219,7 @@ app.get('/send-message_media', async (req, res) => {
                 Buffer.from(response.data).toString('base64'),
                 fileNameToUse
             );
-            const chatId = `${phone}@c.us`;
+            const chatId = createChatId(phone);
             await client.sendMessage(chatId, message);
             await client.sendMessage(chatId, media);
         });
@@ -201,8 +229,6 @@ app.get('/send-message_media', async (req, res) => {
         res.status(500).json({ error: 'Error al enviar el mensaje multimedia' });
     }
 });
-
-
 
 app.get('/statusinstancias', (req, res) => {
     res.send(`
