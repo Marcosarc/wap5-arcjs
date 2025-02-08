@@ -16,15 +16,12 @@ const port = process.env.PORT || 3000;
 
 const TOKEN = '1305811408'; // Token requerido
 
-// Middleware para verificar el token en cada endpoint
+// Middleware para verificar el token en cada endpoint (excepto socket.io)
 app.use((req, res, next) => {
     // Se permite el acceso a los archivos de socket.io sin token
     if (req.path.startsWith('/socket.io')) {
         return next();
     }
-    // Si deseas que la página principal también esté protegida, déjalo así.
-    // De lo contrario, se puede omitir la verificación para la ruta '/':
-    // if (req.path === '/') return next();
     const token = req.query.token || req.headers['x-access-token'];
     if (token !== TOKEN) {
         return res.status(401).json({ error: 'Token no válido o no provisto.' });
@@ -61,6 +58,12 @@ function createChatId(phone) {
 }
 
 app.get('/', (_, res) => {
+    // Según el estado de la sesión, definimos el mensaje y el botón a mostrar
+    const statusText = isClientReady ? 'Cliente de WhatsApp está listo!' : 'No hay sesión activa.';
+    const buttonHtml = isClientReady
+        ? `<button id="close-button" onclick="closeWhatsApp()">Cerrar WhatsApp</button>`
+        : `<button id="init-button" onclick="initializeWhatsApp()">Iniciar WhatsApp</button>`;
+
     res.send(`
         <!DOCTYPE html>
         <html lang="es">
@@ -77,46 +80,59 @@ app.get('/', (_, res) => {
         </head>
         <body>
             <h1>WhatsApp Web Authentication</h1>
-            <div id="status"></div>
+            <div id="status"><h2>${statusText}</h2></div>
             <div id="qr-container"></div>
-            <button id="init-button" onclick="initializeWhatsApp()">Iniciar WhatsApp</button>
-            <button id="close-button" onclick="closeWhatsApp()" style="display:none;">Cerrar WhatsApp</button>
+            ${buttonHtml}
             <script>
+                // Se utiliza el mismo token en las peticiones desde el cliente.
+                const TOKEN = '1305811408';
                 const socket = io();
                 const status = document.getElementById('status');
                 const qrContainer = document.getElementById('qr-container');
-                const initButton = document.getElementById('init-button');
-                const closeButton = document.getElementById('close-button');
-
+                
+                // Actualización en tiempo real mediante socket.io
                 socket.on('whatsapp_ready', () => {
                     status.innerHTML = '<h2>Cliente de WhatsApp está listo!</h2>';
                     qrContainer.innerHTML = '';
-                    initButton.style.display = 'none';
-                    closeButton.style.display = 'inline';
+                    // Se oculta el botón de iniciar y se muestra el de cerrar sesión
+                    document.getElementById('init-button')?.remove();
+                    if (!document.getElementById('close-button')) {
+                        const btn = document.createElement('button');
+                        btn.id = 'close-button';
+                        btn.textContent = 'Cerrar WhatsApp';
+                        btn.onclick = closeWhatsApp;
+                        document.body.appendChild(btn);
+                    }
                 });
-
+                
                 socket.on('qr', (qrCode) => {
                     status.innerHTML = '<h2>Escanea el código QR con tu WhatsApp para iniciar sesión</h2>';
                     qrContainer.innerHTML = '<img src="' + qrCode + '" alt="QR Code" />';
                 });
-
+                
                 function initializeWhatsApp() {
-                    // No olvides agregar el token en la URL
-                    fetch('/initialize?token=1305811408')
+                    fetch('/initialize?token=' + TOKEN)
                         .then(response => response.json())
                         .then(data => {
-                            status.innerHTML = data.message;
+                            status.innerHTML = '<h2>' + data.message + '</h2>';
                         });
                 }
-
+                
                 function closeWhatsApp() {
-                    fetch('/close?token=1305811408')
+                    fetch('/close?token=' + TOKEN)
                         .then(response => response.json())
                         .then(data => {
-                            status.innerHTML = data.message;
+                            status.innerHTML = '<h2>' + data.message + '</h2>';
                             qrContainer.innerHTML = '';
-                            initButton.style.display = 'inline';
-                            closeButton.style.display = 'none';
+                            // Se oculta el botón de cerrar y se muestra el de iniciar sesión
+                            document.getElementById('close-button')?.remove();
+                            if (!document.getElementById('init-button')) {
+                                const btn = document.createElement('button');
+                                btn.id = 'init-button';
+                                btn.textContent = 'Iniciar WhatsApp';
+                                btn.onclick = initializeWhatsApp;
+                                document.body.appendChild(btn);
+                            }
                         });
                 }
             </script>
@@ -135,7 +151,7 @@ app.get('/initialize', async (req, res) => {
     qrCodeData = null;
 
     try {
-        // Intentamos eliminar la sesión anterior, si existe
+        // Eliminamos la sesión anterior, si existe
         await fs.unlink('./session.json').catch(() => {});
 
         client = new Client({
@@ -256,7 +272,7 @@ app.get('/statusinstancias', (req, res) => {
         ${isClientReady ? '<button onclick="cerrarSesion()">Cerrar Sesión</button>' : ''}
         <script>
             function cerrarSesion() {
-                fetch('/close?token=1305811408')
+                fetch('/close?token=${TOKEN}')
                     .then(response => response.json())
                     .then(data => {
                         alert(data.message);
