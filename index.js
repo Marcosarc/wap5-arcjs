@@ -16,6 +16,12 @@ const port = process.env.PORT || 3000;
 
 const TOKEN = '1305811408'; // Token requerido
 
+// Middleware para agregar la cabecera CORS
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    next();
+});
+
 // Middleware para verificar el token en cada endpoint (excepto para socket.io)
 app.use((req, res, next) => {
     if (req.path.startsWith('/socket.io')) {
